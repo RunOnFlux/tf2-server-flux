@@ -9,17 +9,21 @@ installed and updated with SteamCMD on every start, under a supervisor that:
   console (srcds writes nothing past the map load without a terminal, and reads only from one)
 - keeps the owner's part of `tf/` on the data volume: `custom/` (server.cfg, maps, sounds),
   `addons/` (Metamod:Source + SourceMod, plugins, configs), SourceMod's `cfg/sourcemod` and the two
-  ban lists. The rest of `tf/` is the game's 14 GB, local to the node
+  ban lists. The rest of `tf/` is the game's own files (most of the ~15 GB install), local to the node
 - installs and updates **Metamod:Source + SourceMod** when `TF2_SOURCEMOD` is on (the stable 64-bit
   builds), never overwriting the owner's admins, databases and configs
+- backs up the owner's files (custom/, addons/, SourceMod's configs, the ban lists) on start, unless
+  one is younger than an hour, and every 6 hours; keeps the newest 10 and always the newest one
+  older than a day and the newest one older than a week. `flux-tf2 restore` puts one back between
+  two servers, after a safety backup
 - quits cleanly on stop and restarts the server in place when it ends on its own
 
 ## Volumes
 
 | Path | Flux mount | What |
 |---|---|---|
-| `/mnt/tf2/data` | `g:` (synced) | `custom/` (`custom/flux/cfg/server.cfg`, `custom/flux/maps/`), `addons/`, `cfg-sourcemod/`, `banned_user.cfg`, `banned_ip.cfg`, `flux/` (log, console logs) |
-| `/mnt/tf2/server` | `ml:server` (local) | the game, ~15 GB |
+| `/mnt/tf2/data` | `g:` (synced) | `custom/` (`custom/flux/cfg/server.cfg`, `custom/flux/maps/`), `addons/`, `cfg-sourcemod/`, `banned_user.cfg`, `banned_ip.cfg`, `flux/` (our log, backups) |
+| `/mnt/tf2/server` | `ml:server` (local) | the game, ~15 GB, and the console logs (`flux-logs/`, 10 MB each, the newest 5) |
 
 Spec: `g:/mnt/tf2/data|ml:server:/mnt/tf2/server`.
 
@@ -48,6 +52,14 @@ on TF2 x64 ("Function CreateInterface not found", measured).
 `flux-console <command>`: one console command, its answer printed (`status`, `say`, `kickid`,
 `banid`, `changelevel`, `sm plugins list`, `sm_kick`...).
 
+`flux-tf2` (JSON): `files` (maps, map cycle, SourceMod, plugins, admins, bans, the generation),
+`map-install` (a .bsp; a .bsp.bz2 is unpacked: srcds loads plain .bsp only), `map-remove` (also out
+of the cycle), `set-mapcycle` (`[]` = the game's own cycle), `plugin-install|enable|remove` (a removed
+stock plugin is not put back by updates), `set-admins` (merged: groups, passwords, IP and name admins,
+comments and unreadable lines are kept), `backups`, `restore <backup>`.
+
+`/tmp/flux-generation` holds `<generation> <epoch>`: a restart is over when it changes.
+
 `flux-tf2` (JSON), for the files on the data volume:
 
 | Command | |
@@ -71,6 +83,13 @@ game path), `mapcyclefile mapcycle_flux.txt` is found there too, and writeid wri
 
 ## Versions
 
+- **1.0.2** (2026-10-11): backups (start, unless one is younger than an hour, and every 6 h;
+  pruning always keeps a day-old and a week-old one) and `flux-tf2 backups|restore`; admins are
+  merged instead of rewritten (groups, passwords, IP/name admins and comments kept); .bsp.bz2 maps
+  unpacked; a removed map leaves the cycle, an empty cycle is allowed; a stock plugin the owner
+  removed stays removed; `net_maxfilesize 64`; `-strictportbind`; console logs on the local volume
+  (10 MB x 5); SourceMod logs older than 14 days deleted; a stop during SteamCMD reaches the trap at
+  once, and SteamCMD's error is logged; `/tmp/flux-generation` for the hub.
 - **1.0.1** (2026-10-11): `flux-tf2`, the hub's JSON commands for maps, the map cycle, SourceMod
   plugins and admins, and the ban lists. A stock plugin switched off stays off: the SourceMod
   update no longer puts it back in plugins/.

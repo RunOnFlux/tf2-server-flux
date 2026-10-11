@@ -17,7 +17,8 @@ reported on stderr, so the server still starts on the rest:
     TF2_EXTRA_ARGS           appended as written (shell words), no +port / -port
     GAME_PORT                -port                the port srcds binds (default 27015)
 
-Always written: `-norestart` (the supervisor restarts, not srcds_run), `-console`, and
+Always written: `-norestart` (the supervisor restarts, not srcds_run), `-console`, `-strictportbind`
+(never another port than the published one), and
 `+exec banned_user.cfg` (srcds does not read its ban list on start; a ban written with writeid
 would be gone after a restart, and the next writeid would write the empty list over the file).
 
@@ -58,7 +59,9 @@ def quoted(name, *, max_len=64, allow_spaces=False):
 
 
 def build():
-    args = ['./srcds_run_64', '-game', 'tf', '-norestart', '-console']
+    # -strictportbind: srcds otherwise moves to the next port when its own is taken, and the
+    # server would run where no published port points.
+    args = ['./srcds_run_64', '-game', 'tf', '-norestart', '-console', '-strictportbind']
 
     port = env('GAME_PORT') or '27015'
     if not (port.isdigit() and 1024 <= int(port) <= 65535):

@@ -11,7 +11,10 @@
 #     plainly in a container it goes silent once the map is up (the previous image did, measured),
 #     so the platform's log showed nothing past the start. Here every console line reaches the
 #     container's output and a rotated log on the game volume
-#   - SIGTERM/SIGINT from Docker: `quit` on the console (sv.db and the ban list are on disk already)
+#   - a backup of the owner's files (custom/, addons/, the ban lists) on start, unless one is
+#     younger than an hour, and every FLUX_BACKUP_HOURS; a restore the hub asked for
+#     (flux-tf2 restore) is applied between two servers, after a safety backup
+#   - SIGTERM/SIGINT from Docker: `quit` on the console (the ban lists are on disk already)
 #   - the server ending on its own: a new generation in the same container, updated first
 #   - FLUX_RESTART_MAX_ATTEMPTS unplanned restarts inside FLUX_RESTART_WINDOW seconds: the
 #     container ends with 42, a server that cannot stay up is the platform's to rebuild or move
@@ -26,6 +29,10 @@ FLUX_RESTART_MAX_ATTEMPTS="${FLUX_RESTART_MAX_ATTEMPTS:-5}"
 FLUX_RESTART_WINDOW="${FLUX_RESTART_WINDOW:-3600}"
 FLUX_RESTART_BACKOFF="${FLUX_RESTART_BACKOFF:-10}"
 FLUX_STOP_GRACE="${FLUX_STOP_GRACE:-30}"
+FLUX_BACKUP_HOURS="${FLUX_BACKUP_HOURS:-6}"
+# SourceMod writes a log per day and never deletes one: older ones go.
+FLUX_SM_LOG_DAYS="${FLUX_SM_LOG_DAYS:-14}"
+tf2() { python3 /opt/flux/fluxtf2.py "$@"; }
 
 s="${FLUX_SERVER_DIR}"
 g="${FLUX_GAME_DIR}"
@@ -33,6 +40,8 @@ g="${FLUX_GAME_DIR}"
 rm -f "${FLUX_RESTART_MARKER}"
 d="${FLUX_DATA_DIR}"
 mkdir -p "${s}" "${g}" "${d}" "$(dirname "${FLUX_LOG}")" "${FLUX_GAME_LOG_DIR}"
+# Image 1.0.1 kept the console logs on the synced data volume (flux/logs): gone, they are local now.
+rm -f "${d}"/flux/logs/*-console.log 2>/dev/null && rmdir "${d}/flux/logs" 2>/dev/null
 
 if ! port="$(flux_valid_port "${GAME_PORT:-27015}")"; then
   flux_log "ERROR GAME_PORT='${GAME_PORT:-}' is not a port from 1024 to 65535; refusing to start"
@@ -42,6 +51,7 @@ export GAME_PORT="${port}"
 flux_log "flux-entrypoint starting (image ${FLUX_IMAGE_VERSION:-dev}, port ${port})"
 
 game_pid=""
+backup_pid=""
 game_rc=0
 terminating=0
 generation=0
@@ -75,18 +85,25 @@ update_server() {
     return 0
   fi
   flux_log "updating the server from Steam (app ${FLUX_STEAM_APP})"
-  # No `validate` on the first attempt: it re-hashes the whole 7 GB install, and would put back
+  # No `validate` on the first attempt: it re-hashes the whole ~15 GB install, and would put back
   # stock files the owner changed in the game folder. A broken install fails the first attempt,
   # and every retry validates.
   validate=""
   for attempt in 1 2 3 4 5; do
+    # In the background and waited for: a `docker stop` during a download reaches the trap at
+    # once instead of after SteamCMD (a foreground child holds bash's traps until it ends).
     # shellcheck disable=SC2086  # validate is "" or "validate"
-    if steamcmd +force_install_dir "${s}" +login anonymous +app_update "${FLUX_STEAM_APP}" ${validate} +quit; then
-      return 0
+    steamcmd +force_install_dir "${s}" +login anonymous +app_update "${FLUX_STEAM_APP}" ${validate} +quit >/tmp/steamcmd.log 2>&1 &
+    local steam_pid=$!
+    wait "${steam_pid}"
+    local steam_rc=$?
+    if [ "${terminating}" = "1" ]; then
+      kill "${steam_pid}" 2>/dev/null
+      return 1
     fi
-    [ "${terminating}" = "1" ] && return 1
+    [ "${steam_rc}" = "0" ] && return 0
     validate="validate"
-    flux_log "WARN steamcmd failed (attempt ${attempt}/5); retrying in 5s with validate"
+    flux_log "WARN steamcmd failed (attempt ${attempt}/5): $(grep -E 'ERROR|Error|error' /tmp/steamcmd.log | tail -1)"
     sleep 5
   done
   if [ -x "${s}/srcds_run_64" ]; then
@@ -100,11 +117,16 @@ update_server() {
 # The owner's part of tf/ lives on the data volume: custom/ (TF2 mounts every folder in it, so
 # custom/flux/cfg/server.cfg, custom/flux/maps/*.bsp and sounds there are found as if in tf/),
 # addons/ (Metamod and SourceMod with their plugins and configs) and the two ban lists. The rest
-# of tf/ is the game's 14 GB, local to the node.
+# of tf/ is the game's own files (most of the ~15 GB install), local to the node.
 link_data() {
   local name target
   mkdir -p "${d}/custom/flux/cfg" "${d}/custom/flux/maps" "${d}/addons"
   [ -f "${d}/custom/flux/cfg/server.cfg" ] || cp /opt/flux/server.cfg "${d}/custom/flux/cfg/server.cfg"
+  # Image 1.0.2: maps up to 64 MB download from the server itself (TF2's default is 16 MB, and
+  # a bigger custom map kicked every player who did not have it). Added once to a server.cfg that
+  # does not say, never over an owner's own value.
+  grep -qE '^[[:space:]]*net_maxfilesize' "${d}/custom/flux/cfg/server.cfg" \
+    || printf '\n// Maps up to 64 MB download from the server itself; bigger ones need FastDL (sv_downloadurl).\nnet_maxfilesize 64\n' >>"${d}/custom/flux/cfg/server.cfg"
   for name in custom addons; do
     target="${g}/${name}"
     if [ -L "${target}" ]; then
@@ -140,24 +162,6 @@ link_data() {
 # Off: metamod_x64.vdf (what loads Metamod) is moved aside, everything else stays.
 FLUX_SM_PROGRAM_FILES='^addons/(metamod/bin/|sourcemod/(bin/|extensions/|gamedata/|translations/|scripting/include/))'
 
-# $1 = the plugins folder of a SourceMod archive, $2 = the server's. Each stock plugin is updated
-# where the OWNER keeps it: in plugins/ if it is on, in plugins/disabled/ if it is off, whatever
-# the archive's own folder for it (it ships mapchooser, rockthevote... in disabled/). Only a plugin
-# the server has neither way goes where the archive puts it. Turning one on or off is a move
-# between the two folders, so this is what keeps that choice across updates.
-place_plugins() {
-  local src="$1" dst="$2" f base
-  while IFS= read -r f; do
-    base="${f##*/}"
-    if [ -f "${dst}/${base}" ]; then
-      cp -f "${src}/${f}" "${dst}/${base}"
-    elif [ -f "${dst}/disabled/${base}" ]; then
-      cp -f "${src}/${f}" "${dst}/disabled/${base}"
-    else
-      mkdir -p "$(dirname "${dst}/${f}")" && cp -f "${src}/${f}" "${dst}/${f}"
-    fi
-  done < <(cd "${src}" && find . -type f -name '*.smx' | sed 's|^\./||')
-}
 install_sourcemod() {
   local vdf="${d}/addons/metamod_x64.vdf" tmp url
   if ! flux_truthy "${TF2_SOURCEMOD:-false}"; then
@@ -203,6 +207,15 @@ install_sourcemod() {
   rm -f "${d}/addons/metamod.vdf" "${d}/addons/metamod.vdf.off"
 }
 
+# shellcheck disable=SC2329  # run in the background below
+backupper() {
+  [ "${FLUX_BACKUP_HOURS}" -gt 0 ] 2>/dev/null || exit 0
+  while true; do
+    sleep $((FLUX_BACKUP_HOURS * 3600))
+    flux_log "backup (every ${FLUX_BACKUP_HOURS}h): $(tf2 backup "every ${FLUX_BACKUP_HOURS}h" force 2>&1 | tail -c 300)"
+  done
+}
+
 # The console, line by line: carriage returns and terminal escapes dropped, onto the container's
 # output and into the current log file, which is rotated at FLUX_GAME_LOG_MAX_BYTES.
 # shellcheck disable=SC2329  # used in a process substitution below
@@ -237,7 +250,11 @@ start_generation() {
   # The build, for the panel's Overview: steam.inf's PatchVersion.
   build="$(sed -n 's/^PatchVersion=//p' "${g}/steam.inf" 2>/dev/null | tr -dc '0-9')"
   [ -n "${build}" ] && flux_log "Team Fortress 2 build ${build}"
+  # A restore the hub asked for (flux-tf2 restore): applied before anything reads the files.
+  [ -f "${d}/flux/restore-request" ] && flux_log "restore: $(tf2 apply-restore 2>&1 | tail -c 400)"
   link_data
+  flux_log "backup (start): $(tf2 backup start 2>&1 | tail -c 300)"
+  find "${d}/addons/sourcemod/logs" -name '*.log' -mtime "+${FLUX_SM_LOG_DAYS}" -delete 2>/dev/null
   install_sourcemod
 
   launch="$(python3 /opt/flux/flux-launch.py 2> >(while IFS= read -r line; do flux_log "launch: ${line}"; done))"
@@ -257,10 +274,16 @@ start_generation() {
     exec script -qfec "${launch}; echo \$? >${FLUX_EXIT_FILE}" /dev/null <"${FLUX_CONSOLE_FIFO}"
   ) > >(console_writer) 2>&1 &
   game_pid=$!
+  # The hub waits for this to change to know a restart is over (never the clocks).
+  printf '%s %s\n' "${generation}" "$(date -u +%s)" >"${FLUX_GENERATION_FILE}"
+  backupper &
+  backup_pid=$!
   return 0
 }
 
 sweep_generation() {
+  [ -n "${backup_pid}" ] && kill "${backup_pid}" 2>/dev/null
+  backup_pid=""
   pkill -KILL -f "${FLUX_GAME_PROCESS}" 2>/dev/null
   game_pid=""
 }

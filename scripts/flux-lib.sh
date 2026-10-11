@@ -15,10 +15,12 @@ FLUX_DATA_DIR="${FLUX_DATA_DIR:-/mnt/tf2/data}"
 FLUX_GAME_DIR="${FLUX_GAME_DIR:-${FLUX_SERVER_DIR}/tf}"
 FLUX_LOG="${FLUX_LOG:-${FLUX_DATA_DIR}/flux/flux.log}"
 FLUX_LOG_MAX_LINES="${FLUX_LOG_MAX_LINES:-2000}"
-FLUX_GAME_LOG_DIR="${FLUX_GAME_LOG_DIR:-${FLUX_DATA_DIR}/flux/logs}"
-FLUX_GAME_LOG_KEEP="${FLUX_GAME_LOG_KEEP:-10}"
+# The console logs: on the INSTALL volume (local), not the synced data one: they churn all day
+# and Syncthing would copy every line (image 1.0.2; they were in flux/logs on the data volume).
+FLUX_GAME_LOG_DIR="${FLUX_GAME_LOG_DIR:-${FLUX_SERVER_DIR}/flux-logs}"
+FLUX_GAME_LOG_KEEP="${FLUX_GAME_LOG_KEEP:-5}"
 # One console log is capped at this many bytes; past it the server goes on in a fresh one.
-FLUX_GAME_LOG_MAX_BYTES="${FLUX_GAME_LOG_MAX_BYTES:-20000000}"
+FLUX_GAME_LOG_MAX_BYTES="${FLUX_GAME_LOG_MAX_BYTES:-10000000}"
 FLUX_GAME_PROCESS="${FLUX_GAME_PROCESS:-srcds_linux64}"
 FLUX_STEAM_APP="${FLUX_STEAM_APP:-232250}"
 # The server's console is its stdin. The supervisor holds this FIFO open and the server reads it
@@ -27,6 +29,8 @@ FLUX_CONSOLE_FIFO="${FLUX_CONSOLE_FIFO:-/tmp/flux-console}"
 FLUX_RESTART_MARKER="${FLUX_RESTART_MARKER:-/tmp/flux-restart-requested}"
 # srcds' exit code, written by the command `script` runs.
 FLUX_EXIT_FILE="${FLUX_EXIT_FILE:-/tmp/flux-srcds-exit}"
+# "<generation> <epoch it started>": the hub's way to see a restart is over.
+FLUX_GENERATION_FILE="${FLUX_GENERATION_FILE:-/tmp/flux-generation}"
 
 flux_log() {
   local line
@@ -137,4 +141,35 @@ flux_console() {
   cmd="${cmd//[$'\r\n']/ }"
   # shellcheck disable=SC2016  # expanded by the inner bash, from its own arguments
   timeout 2 bash -c 'printf "%s\n" "$1" >"$2"' _ "${cmd}" "${FLUX_CONSOLE_FIFO}"
+}
+
+# ---------------------------------------------------------------------------------------------
+# SourceMod
+# ---------------------------------------------------------------------------------------------
+
+# $1 = the plugins folder of a SourceMod archive, $2 = the server's. Each stock plugin is updated
+# where the OWNER keeps it: in plugins/ if it is on, in plugins/disabled/ if it is off, whatever
+# the archive's own folder for it (it ships mapchooser, rockthevote... in disabled/). Only a plugin
+# the server has neither way goes where the archive puts it. Turning one on or off is a move
+# between the two folders, so this is what keeps that choice across updates.
+#
+# A stock plugin installed before and now in neither folder was REMOVED by the owner (the
+# SourceMod tab, or the Files tab): it stays removed. `.flux-stock-plugins` beside plugins/ lists
+# every stock plugin ever placed.
+place_plugins() {
+  local src="$1" dst="$2" f base known="$2/../.flux-stock-plugins" stock_seen=()
+  while IFS= read -r f; do
+    base="${f##*/}"
+    stock_seen+=("${base}")
+    if [ -f "${dst}/${base}" ]; then
+      cp -f "${src}/${f}" "${dst}/${base}"
+    elif [ -f "${dst}/disabled/${base}" ]; then
+      cp -f "${src}/${f}" "${dst}/disabled/${base}"
+    elif grep -qxF "${base}" "${known}" 2>/dev/null; then
+      flux_log "SourceMod: ${base} was removed by the owner; not put back"
+    else
+      mkdir -p "$(dirname "${dst}/${f}")" && cp -f "${src}/${f}" "${dst}/${f}"
+    fi
+  done < <(cd "${src}" && find . -type f -name '*.smx' | sed 's|^\./||')
+  { cat "${known}" 2>/dev/null; printf '%s\n' "${stock_seen[@]}"; } | sort -u >"${known}.tmp" && mv "${known}.tmp" "${known}"
 }

@@ -34,9 +34,9 @@ check "a crash is counted" "0" "$(status flux_restart_counts 'the server ended o
 check "keeps the newest" $'c\nd' "$(flux_files_to_prune 2 a b c d)"
 
 # --- The launch line ---------------------------------------------------------------------------
-check "defaults" "./srcds_run_64 -game tf -norestart -console -port 27015 +exec banned_user.cfg +exec banned_ip.cfg +maxplayers 24 +map ctf_2fort" "$(launch)"
+check "defaults" "./srcds_run_64 -game tf -norestart -console -strictportbind -port 27015 +exec banned_user.cfg +exec banned_ip.cfg +maxplayers 24 +map ctf_2fort" "$(launch)"
 check "everything set, quoted values as one word with their quotes" \
-  "./srcds_run_64 -game tf -norestart -console -port 31015 +exec banned_user.cfg +exec banned_ip.cfg +maxplayers 32 +map pl_upward +hostname '\"My TF2 Server\"' +sv_password '\"pw\"' +rcon_password '\"rcon12345\"' +sv_setsteamaccount 0123456789ABCDEF0123456789ABCDEF +sv_region 3" \
+  "./srcds_run_64 -game tf -norestart -console -strictportbind -port 31015 +exec banned_user.cfg +exec banned_ip.cfg +maxplayers 32 +map pl_upward +hostname '\"My TF2 Server\"' +sv_password '\"pw\"' +rcon_password '\"rcon12345\"' +sv_setsteamaccount 0123456789ABCDEF0123456789ABCDEF +sv_region 3" \
   "$(launch GAME_PORT=31015 TF2_MAXPLAYERS=32 TF2_MAP=pl_upward TF2_HOSTNAME='My TF2 Server' TF2_PASSWORD=pw TF2_RCON_PASSWORD=rcon12345 TF2_GSLT=0123456789ABCDEF0123456789ABCDEF TF2_EXTRA_ARGS='+sv_region 3')"
 check "a Workshop map" "0" "$(status grep -q '+map workshop/454812751' <<<"$(launch TF2_MAP=workshop/454812751)")"
 check "a hostname with a quote is left out" "1" "$(status grep -q hostname <<<"$(launch TF2_HOSTNAME='bad"name')")"
@@ -96,6 +96,86 @@ printf 'addip 0 1.2.3.4\n' >"${data}/banned_ip.cfg"
 check "the ban lists are read" "id STEAM_0:1:123 0.0|id STEAM_0:0:9 60.0|id [U:1:247] 0.0|ip 1.2.3.4 0.0" "$(tf2 files | jq1 'print("|".join(" ".join(str(b[k]) for k in ("kind", "id", "minutes")) for b in d["bans"]))')"
 check "a [U:1:n] ban has its SteamID64 (what writeid writes)" "76561197960265975" "$(tf2 files | jq1 'print(d["bans"][2]["steam64"])')"
 check "usage" "64" "$(status tf2 nonsense)"
+
+# --- flux-tf2: the files the panel edits ---------------------------------------------------------
+data="${tmp}/data"
+tf2() { env -i PATH="${PATH}" FLUX_DATA_DIR="${data}" FLUX_SERVER_DIR="${tmp}/srv" FLUX_RESTART_MARKER="${tmp}/marker" FLUX_GENERATION_FILE="${tmp}/gen" python3 scripts/fluxtf2.py "$@"; }
+admins="${data}/addons/sourcemod/configs/admins_simple.ini"
+mkdir -p "$(dirname "${admins}")"
+cat >"${admins}" <<'INI'
+// The owner's own notes, kept
+"STEAM_0:1:5" "@Full Admins"
+"STEAM_0:0:7" "50:bcd" "secretpw" // Bob
+"!10.0.0.1" "99:z"
+"SomePlayerName" "a"
+some line nobody can read
+"STEAM_0:0:9" "z" // Gone
+INI
+admin_json="$(tf2 files)"
+check "a group admin reads as its group" "@Full Admins True" "$(python3 -c 'import json,sys;a=json.loads(sys.argv[1])["admins"][0];print(a["flags"], a["group"])' "${admin_json}")"
+check "an IP admin is read-only" "False" "$(python3 -c 'import json,sys;a=[x for x in json.loads(sys.argv[1])["admins"] if x["id"]=="!10.0.0.1"][0];print(a["editable"])' "${admin_json}")"
+tf2 set-admins '[{"id":"STEAM_0:1:5","flags":"@Full Admins","immunity":0,"name":""},{"id":"STEAM_0:0:7","flags":"bcde","immunity":50,"name":"Bob"},{"id":"76561197960265748","flags":"z","immunity":99,"name":"New"}]' >/dev/null
+check "the group stays a group" '"STEAM_0:1:5" "@Full Admins"' "$(sed -n 2p "${admins}")"
+check "an edit keeps the admin's password" '"STEAM_0:0:7" "50:bcde" "secretpw" // Bob' "$(sed -n 3p "${admins}")"
+check "comments, IP and name admins and unreadable lines are kept in place" "4" "$(grep -cE '^// The owner|^"!10.0.0.1"|^"SomePlayerName"|^some line nobody' "${admins}")"
+check "an admin left out is removed" "0" "$(grep -c 'STEAM_0:0:9' "${admins}")"
+check "a new admin is appended" '"STEAM_0:0:10" "99:z" // New' "$(tail -1 "${admins}")"
+check "a bad group is refused" "2" "$(status tf2 set-admins '[{"id":"STEAM_0:1:5","flags":"@a\"b"}]')"
+check "bad flags are refused" "2" "$(status tf2 set-admins '[{"id":"STEAM_0:1:5","flags":"xyz"}]')"
+
+# Maps: a .bsp.bz2 is unpacked; a removed map leaves the cycle; an empty cycle is the game's own.
+printf 'VBSP-a-map' >"${tmp}/1700000000-ctf_test.bsp"
+bzip2 -k "${tmp}/1700000000-ctf_test.bsp" && mv "${tmp}/1700000000-ctf_test.bsp.bz2" "${tmp}/1700000001-koth_zip.bsp.bz2"
+check "a .bsp installs" "0" "$(status tf2 map-install "${tmp}/1700000000-ctf_test.bsp")"
+check "a .bsp.bz2 is unpacked into a .bsp" "koth_zip VBSP" "$(tf2 map-install "${tmp}/1700000001-koth_zip.bsp.bz2" | python3 -c 'import json,sys;print(json.load(sys.stdin)["map"])') $(head -c 4 "${data}/custom/flux/maps/koth_zip.bsp")"
+check "no .bz2 is kept" "0" "$(find "${data}/custom/flux/maps" -name '*.bz2' | wc -l)"
+printf 'not bzip2' >"${tmp}/1700000002-bad.bsp.bz2"
+check "a .bz2 that is not bzip2 is refused" "2" "$(status tf2 map-install "${tmp}/1700000002-bad.bsp.bz2")"
+printf 'XXXX' >"${tmp}/1700000003-fake.bsp"
+check "a .bsp that is not a map is refused" "2" "$(status tf2 map-install "${tmp}/1700000003-fake.bsp")"
+tf2 set-mapcycle '["ctf_2fort","koth_zip","pl_upward"]' >/dev/null
+tf2 map-remove koth_zip.bsp >/dev/null
+check "a removed map leaves the cycle" "ctf_2fort pl_upward" "$(tr '\n' ' ' <"${data}/custom/flux/cfg/mapcycle_flux.txt" | sed 's/ $//')"
+tf2 set-mapcycle '[]' >/dev/null
+check "an empty cycle removes the file" "1" "$(status test -f "${data}/custom/flux/cfg/mapcycle_flux.txt")"
+check "and the mapcyclefile line" "0" "$(grep -c mapcyclefile "${data}/custom/flux/cfg/server.cfg" 2>/dev/null || true)"
+
+# Backups: start backups are skipped when one is recent; pruning keeps a day-old and a week-old one.
+printf 'banid 0 [U:1:5]\n' >"${data}/banned_user.cfg"
+mkdir -p "${data}/addons/sourcemod/logs" && echo log >"${data}/addons/sourcemod/logs/L1.log"
+first="$(tf2 backup start | python3 -c 'import json,sys;print(json.load(sys.stdin).get("backup",""))')"
+check "a first backup is made" "0" "$(status test -f "${data}/flux/backups/${first}")"
+check "SourceMod's logs are not in it" "0" "$(tar -tzf "${data}/flux/backups/${first}" | grep -c 'sourcemod/logs' || true)"
+check "the ban list is" "1" "$(tar -tzf "${data}/flux/backups/${first}" | grep -c '^banned_user.cfg$')"
+check "a second start backup within the hour is skipped" "1" "$(tf2 backup start | grep -c skipped)"
+check "prune: keeps the newest 2, the newest day-old and the newest week-old one" "c e g" "$(PYTHONPATH=scripts python3 -c '
+import fluxtf2 as t
+now=10*86400
+rows=[{"name":n,"created":now-a} for n,a in [("a",10),("b",20),("c",3600),("d",90000),("e",100000),("f",8*86400),("g",9*86400)]]
+print(" ".join(t.backups_to_prune(rows,2,now)))')"
+check "a restore needs a backup name" "2" "$(status tf2 restore ../../etc/passwd)"
+check "an unknown backup is refused" "2" "$(status tf2 restore 20990101-000000-tf2.tar.gz)"
+check "a restore is requested (the server is not running here)" "${first}" "$(tf2 restore "${first}" >/dev/null; cat "${data}/flux/restore-request")"
+check "with a restart marker" "requested: restore ${first}" "$(cat "${tmp}/marker")"
+printf 'banid 0 [U:1:999]\n' >"${data}/banned_user.cfg"
+rm -rf "${data}/addons/sourcemod/configs"
+out="$(tf2 apply-restore)"
+check "the restore puts the backup back" "banid 0 [U:1:5]" "$(cat "${data}/banned_user.cfg")"
+check "admins too" "0" "$(status test -f "${admins}")"
+check "after a safety backup of what was there" "1" "$(python3 -c 'import json,sys;print(int(bool(json.loads(sys.argv[1])["safetyBackup"])))' "${out}")"
+check "the request is done" "1" "$(status test -f "${data}/flux/restore-request")"
+
+# Stock plugins: one the owner removed is not put back by an update.
+sm="${tmp}/sm" && mkdir -p "${sm}/src/disabled" "${sm}/dst/disabled"
+touch "${sm}/src/basebans.smx" "${sm}/src/nextmap.smx" "${sm}/src/disabled/rockthevote.smx"
+FLUX_LOG="" place_plugins "${sm}/src" "${sm}/dst" >/dev/null
+check "a first install places every stock plugin" "3" "$(find "${sm}/dst" -name '*.smx' | wc -l)"
+rm "${sm}/dst/nextmap.smx"
+FLUX_LOG="" place_plugins "${sm}/src" "${sm}/dst" >/dev/null
+check "a removed stock plugin stays removed" "1" "$(status test -f "${sm}/dst/nextmap.smx")"
+mv "${sm}/dst/basebans.smx" "${sm}/dst/disabled/"
+FLUX_LOG="" place_plugins "${sm}/src" "${sm}/dst" >/dev/null
+check "a switched-off one stays off" "0 1" "$(status test -f "${sm}/dst/disabled/basebans.smx") $(status test -f "${sm}/dst/basebans.smx")"
 
 printf '%s passed, %s failed\n' "${pass}" "${fail}"
 [ "${fail}" = "0" ]

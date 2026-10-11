@@ -69,12 +69,12 @@ STUB
 chmod +x /usr/local/bin/steamcmd
 
 export FLUX_SERVER_DIR=/tmp/srv FLUX_DATA_DIR=/tmp/data FLUX_RESTART_BACKOFF=1
-logs=/tmp/data/flux/logs
+logs=/tmp/srv/flux-logs
 TF2_HOSTNAME='Test Server' TF2_RCON_PASSWORD=abc12345 GAME_PORT=31000 FLUX_GAME_LOG_MAX_BYTES=400 FLUX_GAME_LOG_KEEP=3 \
   /opt/flux/flux-entrypoint.sh >/tmp/sup.log 2>&1 &
 sup=$!
 check "srcds comes up under a terminal and its console reaches the log" "0" "$(status wait_for "grep -qh 'VAC secure' ${logs}/*-console.log 2>/dev/null" 20)"
-check "the launch line arrives as words, the quoted name as one" "0" "$(status grep -qh 'args: -game tf -norestart -console -port 31000 +exec banned_user.cfg +exec banned_ip.cfg' ${logs}/*-console.log)"
+check "the launch line arrives as words, the quoted name as one" "0" "$(status grep -qh 'args: -game tf -norestart -console -strictportbind -port 31000 +exec banned_user.cfg +exec banned_ip.cfg' ${logs}/*-console.log)"
 check "the quoted name" "0" "$(status grep -qh '+hostname "Test Server"' ${logs}/*-console.log)"
 check "the console reaches the container output too" "0" "$(status grep -q 'VAC secure' /tmp/sup.log)"
 check "the build is logged" "0" "$(status grep -q "Team Fortress 2 build 11087207" /tmp/sup.log)"
@@ -84,13 +84,27 @@ check "the ban list is the data volume" "/tmp/data/banned_user.cfg" "$(readlink 
 check "a server.cfg to edit" "0" "$(status test -s /tmp/data/custom/flux/cfg/server.cfg)"
 check "flux-console reaches the console and prints the answer" "0" "$(status grep -q 'Console: hi there' <<<"$(flux-console say hi there)")"
 
+check "a backup is made on the first start" "1" "$(find /tmp/data/flux/backups -name '*-tf2.tar.gz' | wc -l)"
+check "the generation is published for the hub" "1" "$(cut -d' ' -f1 /tmp/flux-generation)"
+check "the console logs are local, not on the data volume" "0" "$(find /tmp/data -name '*-console.log' | wc -l)"
+check "server.cfg lets maps up to 64 MB download" "1" "$(grep -c '^net_maxfilesize 64' /tmp/data/custom/flux/cfg/server.cfg)"
+check "srcds may not move to another port" "0" "$(status grep -qh -- '-strictportbind' ${logs}/*-console.log)"
+
+# A restore through the hub's command: the server quits, the next start puts the backup back.
+first="$(basename "$(find /tmp/data/flux/backups -name '*-tf2.tar.gz' | head -1)")"
+printf 'banid 0 [U:1:4242]\n' >/tmp/data/banned_user.cfg
+check "a restore is accepted" "0" "$(status flux-tf2 restore "${first}")"
+check "the server restarts for it and the backup is back" "0" "$(status wait_for "grep -q 'restore: ' /tmp/sup.log && ! grep -q 4242 /tmp/data/banned_user.cfg && test \"\$(cut -d' ' -f1 /tmp/flux-generation)\" = 2" 20)"
+check "the restore is not counted as a crash" "0" "$(grep -c 'restarts within' /tmp/sup.log)"
+check "a safety backup was taken first" "2" "$(find /tmp/data/flux/backups -name '*-tf2.tar.gz' | wc -l)"
+
 for n in 1 2 3 4 5 6 7 8; do flux-console say "filler line number ${n} to roll the log over" >/dev/null; done
 check "the console log is rotated and pruned" "1" "$(status test "$(find "${logs}" -name '*-console.log' | wc -l)" -gt 3)"
 
 # A crash: restarted in place.
 flux-console crash >/dev/null
 check "a crash is restarted in place" "0" "$(status wait_for "grep -q 'restarting the server in place' /tmp/sup.log" 10)"
-check "and the new server comes up" "0" "$(status wait_for "grep -q 'generation 2' /tmp/sup.log" 10)"
+check "and the new server comes up" "0" "$(status wait_for "grep -q 'generation 3' /tmp/sup.log" 10)"
 check "the crash is reported with its code" "0" "$(status grep -q 'exit 139' /tmp/sup.log)"
 sleep 2
 
