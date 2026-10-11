@@ -18,9 +18,10 @@ RUN apt-get update -y && \
         ca-certificates curl procps tzdata python3 util-linux libcurl3t64-gnutls && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-COPY scripts/flux-lib.sh scripts/flux-entrypoint.sh scripts/flux-console.sh scripts/flux-launch.py server.cfg /opt/flux/
+COPY scripts/flux-lib.sh scripts/flux-entrypoint.sh scripts/flux-console.sh scripts/flux-launch.py scripts/fluxtf2.py server.cfg /opt/flux/
 RUN chmod 0755 /opt/flux/*.sh /opt/flux/*.py && \
-    ln -s /opt/flux/flux-console.sh /usr/local/bin/flux-console
+    ln -s /opt/flux/flux-console.sh /usr/local/bin/flux-console && \
+    ln -s /opt/flux/fluxtf2.py /usr/local/bin/flux-tf2
 
 RUN steamcmd +quit >/dev/null 2>&1; test -d /root/.local/share/Steam
 

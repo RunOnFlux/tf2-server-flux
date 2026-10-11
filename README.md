@@ -48,6 +48,20 @@ on TF2 x64 ("Function CreateInterface not found", measured).
 `flux-console <command>`: one console command, its answer printed (`status`, `say`, `kickid`,
 `banid`, `changelevel`, `sm plugins list`, `sm_kick`...).
 
+`flux-tf2` (JSON), for the files on the data volume:
+
+| Command | |
+|---|---|
+| `flux-tf2 files` | custom maps, the map cycle, SourceMod (installed / on), plugins (on and off), admins, bans |
+| `flux-tf2 map-install <file>` / `map-remove <name>` | a `.bsp` (checked: starts with VBSP) into `custom/flux/maps` |
+| `flux-tf2 set-mapcycle '["ctf_2fort", ...]'` | `custom/flux/cfg/mapcycle_flux.txt`, and `mapcyclefile` in server.cfg |
+| `flux-tf2 plugin-install <file>` / `plugin-enable <name> on\|off` / `plugin-remove <name>` | `.smx` (checked: FFPS); off = `plugins/disabled/` |
+| `flux-tf2 set-admins '[{"id", "flags", "immunity", "name"}]'` | `admins_simple.ini`; SteamID64, `[U:1:n]` or STEAM_x:y:z |
+
+Measured: `exec server.cfg` runs `custom/flux/cfg/server.cfg` (TF2 mounts custom/ folders on the
+game path), `mapcyclefile mapcycle_flux.txt` is found there too, and writeid writes bans as
+`banid 0 [U:1:n]`.
+
 ## Measured (build 11087207)
 
 - 15 GB install; `ctf_2fort` up in ~20 s; ~700 MB RAM idle.
@@ -57,4 +71,7 @@ on TF2 x64 ("Function CreateInterface not found", measured).
 
 ## Versions
 
+- **1.0.1** (2026-10-11): `flux-tf2`, the hub's JSON commands for maps, the map cycle, SourceMod
+  plugins and admins, and the ban lists. A stock plugin switched off stays off: the SourceMod
+  update no longer puts it back in plugins/.
 - **1.0.0** (2026-10-11): first release, from runonflux/garrysmod-server-flux.

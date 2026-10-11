@@ -32,6 +32,7 @@ check "flux-launch.py runs" "0" "$(status python3 /opt/flux/flux-launch.py)"
 for script in flux-entrypoint.sh flux-console.sh flux-lib.sh; do
   check "${script} parses" "0" "$(status bash -n "/opt/flux/${script}")"
 done
+check "flux-tf2 is on the PATH" "0" "$(status command -v flux-tf2)"
 check "libcurl-gnutls (replay_srv.so needs it)" "0" "$(status bash -c 'ldconfig -p | grep -q libcurl-gnutls.so.4')"
 
 # --- The supervisor, around a stand-in Steam and a stand-in srcds ------------------------------

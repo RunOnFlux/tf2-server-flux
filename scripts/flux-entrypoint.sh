@@ -138,7 +138,26 @@ link_data() {
 # latest of their stable branches, into addons/ on the data volume. Updated on every start
 # (SourceMod breaks on game updates until it is updated too); plugins, configs and data are kept.
 # Off: metamod_x64.vdf (what loads Metamod) is moved aside, everything else stays.
-FLUX_SM_PROGRAM_FILES='^addons/(metamod/bin/|sourcemod/(bin/|extensions/|gamedata/|translations/|scripting/include/|plugins/[^/]+\.smx$))'
+FLUX_SM_PROGRAM_FILES='^addons/(metamod/bin/|sourcemod/(bin/|extensions/|gamedata/|translations/|scripting/include/))'
+
+# $1 = the plugins folder of a SourceMod archive, $2 = the server's. Each stock plugin is updated
+# where the OWNER keeps it: in plugins/ if it is on, in plugins/disabled/ if it is off, whatever
+# the archive's own folder for it (it ships mapchooser, rockthevote... in disabled/). Only a plugin
+# the server has neither way goes where the archive puts it. Turning one on or off is a move
+# between the two folders, so this is what keeps that choice across updates.
+place_plugins() {
+  local src="$1" dst="$2" f base
+  while IFS= read -r f; do
+    base="${f##*/}"
+    if [ -f "${dst}/${base}" ]; then
+      cp -f "${src}/${f}" "${dst}/${base}"
+    elif [ -f "${dst}/disabled/${base}" ]; then
+      cp -f "${src}/${f}" "${dst}/disabled/${base}"
+    else
+      mkdir -p "$(dirname "${dst}/${f}")" && cp -f "${src}/${f}" "${dst}/${f}"
+    fi
+  done < <(cd "${src}" && find . -type f -name '*.smx' | sed 's|^\./||')
+}
 install_sourcemod() {
   local vdf="${d}/addons/metamod_x64.vdf" tmp url
   if ! flux_truthy "${TF2_SOURCEMOD:-false}"; then
@@ -160,11 +179,17 @@ install_sourcemod() {
     # to the data volume ("Invalid cross-device link", measured).
     rm -rf "${tmp}/x" && mkdir -p "${tmp}/x"
     if tar -C "${tmp}/x" -xzf "${tmp}/${name}" 2>/dev/null; then
+      # The plugins are placed on their own (place_plugins), so they are taken out of the copy.
+      if [ -d "${tmp}/x/addons/sourcemod/plugins" ]; then
+        mv "${tmp}/x/addons/sourcemod/plugins" "${tmp}/plugins"
+      fi
       [ -d "${tmp}/x/addons" ] && cp -an "${tmp}/x/addons/." "${d}/addons/"
       [ -d "${tmp}/x/cfg/sourcemod" ] && cp -an "${tmp}/x/cfg/sourcemod/." "${d}/cfg-sourcemod/"
       (cd "${tmp}/x" && find addons -type f | grep -E "${FLUX_SM_PROGRAM_FILES}" | while IFS= read -r f; do
         mkdir -p "${d}/$(dirname "${f}")" && cp -f "${f}" "${d}/${f}"
       done)
+      [ -d "${tmp}/plugins" ] && place_plugins "${tmp}/plugins" "${d}/addons/sourcemod/plugins"
+      rm -rf "${tmp}/plugins"
       flux_log "SourceMod: ${name}"
     else
       flux_log "WARN ${name} could not be unpacked"
