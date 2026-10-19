@@ -257,7 +257,10 @@ start_generation() {
   find "${d}/addons/sourcemod/logs" -name '*.log' -mtime "+${FLUX_SM_LOG_DAYS}" -delete 2>/dev/null
   install_sourcemod
 
-  launch="$(python3 /opt/flux/flux-launch.py 2> >(while IFS= read -r line; do flux_log "launch: ${line}"; done))"
+  # The launcher's warnings go to a file and are logged after: a process substitution here would
+  # write its log lines into the command substitution, i.e. into the launch line.
+  launch="$(python3 /opt/flux/flux-launch.py 2>/tmp/flux-launch.err)"
+  while IFS= read -r line; do flux_log "launch: ${line}"; done </tmp/flux-launch.err
   if [ -z "${launch}" ]; then
     flux_log "ERROR could not build the launch line"
     return 1

@@ -83,6 +83,8 @@ game path), `mapcyclefile mapcycle_flux.txt` is found there too, and writeid wri
 
 ## Versions
 
+- **1.0.3** (2026-10-19): the launcher's warnings no longer end up inside the launch line (a process
+  substitution inside `$(...)` wrote its log lines into the captured result).
 - **1.0.2** (2026-10-11): backups (start, unless one is younger than an hour, and every 6 h;
   pruning always keeps a day-old and a week-old one) and `flux-tf2 backups|restore`; admins are
   merged instead of rewritten (groups, passwords, IP/name admins and comments kept); .bsp.bz2 maps

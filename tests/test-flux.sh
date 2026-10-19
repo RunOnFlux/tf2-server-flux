@@ -177,5 +177,22 @@ mv "${sm}/dst/basebans.smx" "${sm}/dst/disabled/"
 FLUX_LOG="" place_plugins "${sm}/src" "${sm}/dst" >/dev/null
 check "a switched-off one stays off" "0 1" "$(status test -f "${sm}/dst/disabled/basebans.smx") $(status test -f "${sm}/dst/basebans.smx")"
 
+# --- The entrypoint: launcher warnings never reach the launch line --------------------------------
+# The real launch-building lines of start_generation, run with a launcher that warns on stderr. A
+# process substitution inside $(...) would write the logged warning into the launch line.
+# shellcheck disable=SC2016
+block="$(sed -n '/^  launch="\$(python3/,/^  fi$/p' scripts/flux-entrypoint.sh)"
+# shellcheck disable=SC2329
+(
+  python3() { echo "./srcds_run_64 -game tf"; echo "launch warning: bad value" >&2; }
+  flux_log() { echo "LOG $*" >>"${tmp}/entry.log"; echo "$*"; }
+  launch=""
+  eval "${block//return 1/true}"
+  printf '%s' "${launch}" >"${tmp}/launch.out"
+) >/dev/null
+captured="$(cat "${tmp}/launch.out")"
+check "the warning is still logged" "LOG launch: launch warning: bad value" "$(cat "${tmp}/entry.log")"
+check "launcher warnings stay out of the launch line" "./srcds_run_64 -game tf" "${captured}"
+
 printf '%s passed, %s failed\n' "${pass}" "${fail}"
 [ "${fail}" = "0" ]
