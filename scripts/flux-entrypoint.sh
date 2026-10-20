@@ -39,7 +39,10 @@ g="${FLUX_GAME_DIR}"
 
 rm -f "${FLUX_RESTART_MARKER}"
 d="${FLUX_DATA_DIR}"
-mkdir -p "${s}" "${g}" "${d}" "$(dirname "${FLUX_LOG}")" "${FLUX_GAME_LOG_DIR}"
+mkdir -p "${s}" "${g}" "${d}" "${d}/flux" "$(dirname "${FLUX_LOG}")" "${FLUX_GAME_LOG_DIR}"
+# An older image kept flux.log on the synced data volume: move it here, once.
+flux_log_migrate "${FLUX_DATA_DIR}/flux/flux.log"
+flux_banner "Team Fortress 2"
 # Image 1.0.1 kept the console logs on the synced data volume (flux/logs): gone, they are local now.
 rm -f "${d}"/flux/logs/*-console.log 2>/dev/null && rmdir "${d}/flux/logs" 2>/dev/null
 
@@ -268,6 +271,7 @@ start_generation() {
   flux_prune "${FLUX_GAME_LOG_DIR}" '*-console.log' "${FLUX_GAME_LOG_KEEP}"
   [ "${terminating}" = "1" ] && return 2
 
+  flux_banner "Team Fortress 2"
   flux_log "starting the server (generation ${generation})"
   (
     cd "${s}" || exit 1

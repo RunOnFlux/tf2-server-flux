@@ -33,3 +33,5 @@ docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -x scripts/*.s
 - **srcds loads plain .bsp only**: a .bsp.bz2 upload is unpacked; .bz2 is for FastDL.
 - **Backups and restores are fluxtf2.py's** (`backup`, `apply-restore`); the supervisor only calls
   them. A restore is applied between two servers, via the restart marker and `quit`.
+- **`flux.log` is local** (`$FLUX_SERVER_DIR/flux-logs/flux.log`, 5 MB then one `.1`), never on the synced data volume: a constantly written file there is constant Syncthing traffic. `flux_log_migrate` moves an old one off the data volume at start. `flux_banner` prints the FluxCloud banner at container start and every generation; its text is tested.
+- **The scheduled CI run publishes only with something to apply** (`.github/ci/needs-rebuild.sh`): urgent security updates, or commits on main since the published `:latest` (label `org.opencontainers.image.revision`) that touch the image inputs.

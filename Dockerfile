@@ -5,7 +5,12 @@
 # environment, runs srcds in a pseudo-terminal so its console reaches the logs (srcds writes
 # nothing once the map is up without one), rotates those logs, quits cleanly on stop and restarts
 # the server in place. See README.md.
-FROM steamcmd/steamcmd:ubuntu-24
+#
+# The base. CI builds it pinned to the digest it resolved and records that digest in the
+# org.opencontainers.image.base.digest label, which the scheduled check compares against
+# (.github/ci/needs-rebuild.sh).
+ARG BASE_IMAGE=steamcmd/steamcmd:ubuntu-24
+FROM ${BASE_IMAGE}
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG FLUX_IMAGE_VERSION=dev
@@ -14,6 +19,7 @@ ARG FLUX_IMAGE_VERSION=dev
 # and srcds dies with "Could not load: replay_srv.so" without it (measured). `script` (util-linux)
 # gives srcds its terminal.
 RUN apt-get update -y && \
+    apt-get upgrade -y --no-install-recommends && \
     apt-get install -y --no-install-recommends \
         ca-certificates curl procps tzdata python3 util-linux libcurl3t64-gnutls && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
