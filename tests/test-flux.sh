@@ -43,6 +43,9 @@ check "a hostname with a quote is left out" "1" "$(status grep -q hostname <<<"$
 check "a password with a space is left out" "1" "$(status grep -q sv_password <<<"$(launch TF2_PASSWORD='a b')")"
 check "a map that is not one word falls back" "0" "$(status grep -q '+map ctf_2fort' <<<"$(launch TF2_MAP='ctf 2fort; quit')")"
 check "players out of range fall back" "0" "$(status grep -q '+maxplayers 24' <<<"$(launch TF2_MAXPLAYERS=500)")"
+check "non-ASCII digits are not a player count" "0" "$(status grep -q '+maxplayers 24' <<<"$(launch TF2_MAXPLAYERS='²')")"
+check "a control character in the name leaves it out" "1" "$(status grep -q hostname <<<"$(launch TF2_HOSTNAME=$'A\x01B')")"
+check "a zero-width space in the name leaves it out" "1" "$(status grep -q hostname <<<"$(launch TF2_HOSTNAME=$'A\u200bB')")"
 check "a bad port falls back" "0" "$(status grep -q -- '-port 27015' <<<"$(launch GAME_PORT=80)")"
 check "extra args may not set the port" "1" "$(status grep -q 'sv_lan' <<<"$(launch TF2_EXTRA_ARGS='+sv_lan 0 -port 1')")"
 # shellcheck disable=SC2016  # the $(...) is the payload, on purpose not expanded
@@ -164,6 +167,17 @@ check "the restore puts the backup back" "banid 0 [U:1:5]" "$(cat "${data}/banne
 check "admins too" "0" "$(status test -f "${admins}")"
 check "after a safety backup of what was there" "1" "$(python3 -c 'import json,sys;print(int(bool(json.loads(sys.argv[1])["safetyBackup"])))' "${out}")"
 check "the request is done" "1" "$(status test -f "${data}/flux/restore-request")"
+
+# A restore whose safety backup cannot be made changes nothing and says so.
+printf 'banid 0 [U:1:999]\n' >"${data}/banned_user.cfg"
+printf '%s\n' "${first}" >"${data}/flux/restore-request"
+chmod 500 "${data}/flux/backups"
+out="$(tf2 apply-restore 2>&1)"
+rc=$?
+chmod 700 "${data}/flux/backups"
+check "no safety backup: the restore is refused" "2" "${rc}"
+check "and says it was not restored" "0" "$(status grep -q 'NOT restored' <<<"${out}")"
+check "the files are untouched" "banid 0 [U:1:999]" "$(cat "${data}/banned_user.cfg")"
 
 # Stock plugins: one the owner removed is not put back by an update.
 sm="${tmp}/sm" && mkdir -p "${sm}/src/disabled" "${sm}/dst/disabled"

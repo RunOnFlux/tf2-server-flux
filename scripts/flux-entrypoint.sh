@@ -82,7 +82,19 @@ trap 'term_handler TERM' TERM
 trap 'term_handler INT' INT
 
 update_server() {
-  local attempt validate
+  local attempt validate installed rc steam_pid steam_home why
+  # SteamCMD's depotcache onto the INSTALL volume (local to the node, never synced). It holds the manifests of
+  # the installed build, which the NEXT update needs and which Steam refuses to an anonymous login once a build
+  # is old; in the container's own layer they are lost on every redeploy and the first update after it fails
+  # with "state is 0x6 after update job". The fresh-install fallback of other images is not ported: a second
+  # ~15 GB copy does not fit next to the first.
+  steam_home="${HOME:-/root}/.local/share/Steam"
+  mkdir -p "${s}/flux-steam/depotcache" "${steam_home}"
+  if [ ! -L "${steam_home}/depotcache" ]; then
+    [ -d "${steam_home}/depotcache" ] && cp -an "${steam_home}/depotcache/." "${s}/flux-steam/depotcache/" 2>/dev/null
+    rm -rf "${steam_home}/depotcache"
+    ln -s "${s}/flux-steam/depotcache" "${steam_home}/depotcache"
+  fi
   if flux_truthy "${SKIP_UPDATE:-}" && [ -x "${s}/srcds_run_64" ]; then
     flux_log "SKIP_UPDATE is set: not updating the server files"
     return 0
@@ -93,21 +105,36 @@ update_server() {
   # and every retry validates.
   validate=""
   for attempt in 1 2 3 4 5; do
+    [ "${terminating}" = "1" ] && return 2
+    installed=0
+    [ -x "${s}/srcds_run_64" ] && installed=1
     # In the background and waited for: a `docker stop` during a download reaches the trap at
     # once instead of after SteamCMD (a foreground child holds bash's traps until it ends).
     # shellcheck disable=SC2086  # validate is "" or "validate"
     steamcmd +force_install_dir "${s}" +login anonymous +app_update "${FLUX_STEAM_APP}" ${validate} +quit >/tmp/steamcmd.log 2>&1 &
-    local steam_pid=$!
+    steam_pid=$!
     wait "${steam_pid}"
-    local steam_rc=$?
+    rc=$?
     if [ "${terminating}" = "1" ]; then
       kill "${steam_pid}" 2>/dev/null
-      return 1
+      return 2
     fi
-    [ "${steam_rc}" = "0" ] && return 0
+    # "state is 0x6 after update job" is a failure whatever the exit code says: Steam no longer serves the
+    # installed build's manifests to an anonymous login, and a retry (even with validate) cannot get past it.
+    if grep -aqE "state is 0x6( |$)" /tmp/steamcmd.log; then
+      if [ "${installed}" = "1" ]; then
+        flux_log "WARN Steam no longer serves the installed build's manifests (state is 0x6): not retrying; starting the build already installed"
+        return 0
+      fi
+      rc=8
+    fi
+    [ "${rc}" = "0" ] && return 0
     validate="validate"
-    flux_log "WARN steamcmd failed (attempt ${attempt}/5): $(grep -E 'ERROR|Error|error' /tmp/steamcmd.log | tail -1)"
-    sleep 5
+    why="$(grep -aE 'ERROR|Error|error' /tmp/steamcmd.log | tail -1)"
+    flux_log "WARN steamcmd failed (attempt ${attempt}/5): ${why}"
+    sleep 5 &
+    wait $!
+    [ "${terminating}" = "1" ] && return 2
   done
   if [ -x "${s}/srcds_run_64" ]; then
     flux_log "WARN could not update from Steam; starting the build already installed"
@@ -243,18 +270,25 @@ console_writer() {
 }
 
 start_generation() {
-  local launch line build
+  local launch line build restore_out
   generation=$((generation + 1))
   rm -f "${FLUX_RESTART_MARKER}" "${FLUX_EXIT_FILE}"
 
-  update_server || return 1
+  update_server
+  case $? in 0) ;; 2) return 2 ;; *) return 1 ;; esac
   [ "${terminating}" = "1" ] && return 2
 
   # The build, for the panel's Overview: steam.inf's PatchVersion.
   build="$(sed -n 's/^PatchVersion=//p' "${g}/steam.inf" 2>/dev/null | tr -dc '0-9')"
   [ -n "${build}" ] && flux_log "Team Fortress 2 build ${build}"
   # A restore the hub asked for (flux-tf2 restore): applied before anything reads the files.
-  [ -f "${d}/flux/restore-request" ] && flux_log "restore: $(tf2 apply-restore 2>&1 | tail -c 400)"
+  if [ -f "${d}/flux/restore-request" ]; then
+    if restore_out="$(tf2 apply-restore 2>&1)"; then
+      flux_log "restore: $(printf '%s' "${restore_out}" | tail -c 400)"
+    else
+      flux_log "ERROR restore FAILED, the world was not changed: $(printf '%s' "${restore_out}" | tail -c 400)"
+    fi
+  fi
   link_data
   flux_log "backup (start): $(tf2 backup start 2>&1 | tail -c 300)"
   find "${d}/addons/sourcemod/logs" -name '*.log' -mtime "+${FLUX_SM_LOG_DAYS}" -delete 2>/dev/null
