@@ -167,6 +167,8 @@ check "the restore puts the backup back" "banid 0 [U:1:5]" "$(cat "${data}/banne
 check "admins too" "0" "$(status test -f "${admins}")"
 check "after a safety backup of what was there" "1" "$(python3 -c 'import json,sys;print(int(bool(json.loads(sys.argv[1])["safetyBackup"])))' "${out}")"
 check "the request is done" "1" "$(status test -f "${data}/flux/restore-request")"
+lastrestore() { python3 -c 'import json,sys;d=json.load(sys.stdin)["lastRestore"];print(d["name"],d["ok"])' < <(tf2 backups); }
+check "backups reports the restore as done" "${first} True" "$(lastrestore)"
 
 # A restore whose safety backup cannot be made changes nothing and says so.
 printf 'banid 0 [U:1:999]\n' >"${data}/banned_user.cfg"
@@ -178,6 +180,19 @@ chmod 700 "${data}/flux/backups"
 check "no safety backup: the restore is refused" "2" "${rc}"
 check "and says it was not restored" "0" "$(status grep -q 'NOT restored' <<<"${out}")"
 check "the files are untouched" "banid 0 [U:1:999]" "$(cat "${data}/banned_user.cfg")"
+check "backups reports that restore as failed" "${first} False" "$(lastrestore)"
+
+# A backup that cannot be unpacked: refused with a reason, the files stay, and it is reported as failed.
+bad="20200101-000000-tf2.tar.gz"
+printf 'not a gzip' >"${data}/flux/backups/${bad}"
+printf '%s\n' "${bad}" >"${data}/flux/restore-request"
+out="$(tf2 apply-restore 2>&1)"
+rc=$?
+check "a broken backup: refused" "2" "${rc}"
+check "with its reason" "0" "$(status grep -q 'could not be restored' <<<"${out}")"
+check "the files are untouched" "banid 0 [U:1:999]" "$(cat "${data}/banned_user.cfg")"
+check "and reported as failed" "${bad} False" "$(lastrestore)"
+rm -f "${data}/flux/backups/${bad}"
 
 # Stock plugins: one the owner removed is not put back by an update.
 sm="${tmp}/sm" && mkdir -p "${sm}/src/disabled" "${sm}/dst/disabled"

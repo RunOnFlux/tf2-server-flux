@@ -59,6 +59,7 @@ STATE_DIR = os.path.join(DATA, "flux")
 BACKUPS = os.path.join(STATE_DIR, "backups")
 BACKUP_REASONS = os.path.join(BACKUPS, "reasons.json")
 RESTORE_REQUEST = os.path.join(STATE_DIR, "restore-request")
+LAST_RESTORE = os.path.join(STATE_DIR, "last-restore.json")
 RESTART_MARKER = os.environ.get("FLUX_RESTART_MARKER", "/tmp/flux-restart-requested")
 GENERATION_FILE = os.environ.get("FLUX_GENERATION_FILE", "/tmp/flux-generation")
 # What a backup holds: the owner's part of tf/, all on the data volume. SourceMod's logs are left
@@ -482,7 +483,12 @@ def backups_to_prune(rows, keep, now):
 
 
 def cmd_backups():
-    out({"backups": backup_rows(), "pendingRestore": read(RESTORE_REQUEST).strip() if read(RESTORE_REQUEST) else None})
+    try:
+        last = json.load(open(LAST_RESTORE))
+    except (OSError, ValueError):
+        last = None
+    out({"backups": backup_rows(), "pendingRestore": read(RESTORE_REQUEST).strip() if read(RESTORE_REQUEST) else None,
+         "lastRestore": last})
 
 
 def make_backup(reason):
@@ -550,6 +556,11 @@ def cmd_restore(name):
          "note": None if sent else "The server is not running: the backup is restored when it next starts."})
 
 
+def restore_result(name, ok, error=None):
+    """The outcome of the last apply-restore, for the hub: it cannot tell a restore that happened from one that failed."""
+    write_text(LAST_RESTORE, json.dumps({"name": name, "ok": ok, "error": error, "at": time.strftime("%Y%m%d-%H%M%S", time.gmtime()) + f"-{time.time_ns()}"}))
+
+
 def cmd_apply_restore():
     name = (read(RESTORE_REQUEST) or "").strip()
     if not name:
@@ -559,14 +570,19 @@ def cmd_apply_restore():
         os.remove(RESTORE_REQUEST)
     except OSError:
         pass
+
+    def refuse(message):
+        restore_result(name, False, message)
+        fail(message)
+
     src = os.path.join(BACKUPS, name)
     if not BACKUP_NAME.match(name) or not os.path.isfile(src):
-        fail(f"the backup to restore is gone: {name}")
+        refuse(f"the backup to restore is gone: {name}")
     try:
         safety = make_backup(f"before restoring {name}")
     except OSError as exc:
         # Nothing was replaced yet: refuse, never restore without the way back.
-        fail(f"could not make the safety backup, so {name} was NOT restored: {exc}")
+        refuse(f"could not make the safety backup, so {name} was NOT restored: {exc}")
     staging = tempfile.mkdtemp(dir=STATE_DIR, prefix="restore-")
     try:
         with tarfile.open(src, "r:gz") as tar:
@@ -583,8 +599,11 @@ def cmd_apply_restore():
             os.replace(new, cur)
             if os.path.lexists(old):
                 shutil.rmtree(old) if os.path.isdir(old) and not os.path.islink(old) else os.remove(old)
-    finally:
+    except Exception as exc:  # a broken archive, a full disk: say so instead of a traceback nobody reads
         shutil.rmtree(staging, ignore_errors=True)
+        refuse(f"the backup {name} could not be restored ({type(exc).__name__}: {exc}); the safety backup {safety} has what was there")
+    shutil.rmtree(staging, ignore_errors=True)
+    restore_result(name, True)
     out({"ok": True, "restored": name, "safetyBackup": safety})
 
 
