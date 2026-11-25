@@ -562,7 +562,11 @@ def cmd_apply_restore():
     src = os.path.join(BACKUPS, name)
     if not BACKUP_NAME.match(name) or not os.path.isfile(src):
         fail(f"the backup to restore is gone: {name}")
-    safety = make_backup(f"before restoring {name}")
+    try:
+        safety = make_backup(f"before restoring {name}")
+    except OSError as exc:
+        # Nothing was replaced yet: refuse, never restore without the way back.
+        fail(f"could not make the safety backup, so {name} was NOT restored: {exc}")
     staging = tempfile.mkdtemp(dir=STATE_DIR, prefix="restore-")
     try:
         with tarfile.open(src, "r:gz") as tar:

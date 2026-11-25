@@ -30,6 +30,7 @@ import os
 import re
 import shlex
 import sys
+import unicodedata
 
 
 def warn(message):
@@ -52,8 +53,9 @@ def quoted(name, *, max_len=64, allow_spaces=False):
     value = env(name)
     if not value:
         return None
-    if '"' in value or ';' in value or (not allow_spaces and ' ' in value) or len(value) > max_len:
-        warn(f'{name} cannot be passed (quotes, semicolons{"" if allow_spaces else ", spaces"} or too long); left out')
+    if ('"' in value or ';' in value or (not allow_spaces and ' ' in value) or len(value) > max_len
+            or any(unicodedata.category(c) in ('Cc', 'Cf') for c in value)):
+        warn(f'{name} cannot be passed (quotes, semicolons{"" if allow_spaces else ", spaces"}, control characters or too long); left out')
         return None
     return f'"{value}"'
 
@@ -64,13 +66,13 @@ def build():
     args = ['./srcds_run_64', '-game', 'tf', '-norestart', '-console', '-strictportbind']
 
     port = env('GAME_PORT') or '27015'
-    if not (port.isdigit() and 1024 <= int(port) <= 65535):
+    if not (re.fullmatch(r'[0-9]+', port) and 1024 <= int(port) <= 65535):
         warn(f'GAME_PORT={port!r} is not a port; using 27015')
         port = '27015'
     args += ['-port', port]
 
     maxplayers = env('TF2_MAXPLAYERS') or '24'
-    if not (maxplayers.isdigit() and 2 <= int(maxplayers) <= 100):
+    if not (re.fullmatch(r'[0-9]+', maxplayers) and 2 <= int(maxplayers) <= 100):
         warn(f'TF2_MAXPLAYERS={maxplayers!r} is not 2 to 100; using 24')
         maxplayers = '24'
     args += ['+exec', 'banned_user.cfg', '+exec', 'banned_ip.cfg', '+maxplayers', maxplayers]

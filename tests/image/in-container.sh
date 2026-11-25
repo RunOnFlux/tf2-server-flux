@@ -114,6 +114,42 @@ check "a stop exits 0" "0" "$?"
 check "a stop is a console quit" "0" "$(status grep -q 'stopped on request (server exited 0)' /tmp/sup.log)"
 check "nothing is left running" "1" "$(status pgrep -f 'srcds_linux64|script -qfec')"
 
+# --- SteamCMD: the depotcache, "state is 0x6", and a stop while it works --------------------------
+export TF2_RCON_PASSWORD=abc12345
+check "the depotcache is on the install volume" "/tmp/srv/flux-steam/depotcache" "$(readlink "${HOME:-/root}/.local/share/Steam/depotcache")"
+printf '#!/bin/bash\necho call >>/tmp/steamcmd-calls\necho "Error! App 232250 state is 0x6 after update job."\nexit 0\n' >/usr/local/bin/steamcmd
+: >/tmp/steamcmd-calls
+/opt/flux/flux-entrypoint.sh >/tmp/entry6.log 2>&1 &
+entry=$!
+check "a 0x6 (exit 0) starts the installed build" "0" "$(status wait_for "grep -q 'Team Fortress 2 build' /tmp/entry6.log" 40)"
+check "after ONE steamcmd call" "1" "$(wc -l </tmp/steamcmd-calls)"
+check "and says why" "1" "$(grep -c 'state is 0x6' /tmp/entry6.log)"
+kill -TERM "${entry}"
+wait "${entry}"
+check "a stop of that server exits 0" "0" "$?"
+
+# A stop while SteamCMD downloads: exit 0, not 42 ("could not be prepared").
+printf '#!/bin/bash\necho call >>/tmp/steamcmd-calls\nsleep 300\n' >/usr/local/bin/steamcmd
+: >/tmp/steamcmd-calls
+/opt/flux/flux-entrypoint.sh >/tmp/entry7.log 2>&1 &
+entry=$!
+wait_for '[ -s /tmp/steamcmd-calls ]' 20
+kill -TERM "${entry}"
+wait "${entry}"
+check "a stop during the download exits 0" "0" "$?"
+check "and is a stop, not a failure" "0" "$(status grep -q 'stopped on request before the server started' /tmp/entry7.log)"
+
+# A stop during the pause between two failed attempts: no new download.
+printf '#!/bin/bash\necho call >>/tmp/steamcmd-calls\necho "Error! boom"\nexit 1\n' >/usr/local/bin/steamcmd
+: >/tmp/steamcmd-calls
+/opt/flux/flux-entrypoint.sh >/tmp/entry8.log 2>&1 &
+entry=$!
+wait_for 'grep -q "attempt 1/5" /tmp/entry8.log' 20
+kill -TERM "${entry}"
+wait "${entry}"
+check "a stop during the retry pause exits 0" "0" "$?"
+check "and no second download starts" "1" "$(wc -l </tmp/steamcmd-calls)"
+
 # --- flux.log is local; the banner ----------------------------------------------------------------
 fl_srv=/tmp/srv
 check "flux.log is on the install volume" "0" "$(status test -s "${fl_srv}/flux-logs/flux.log")"
