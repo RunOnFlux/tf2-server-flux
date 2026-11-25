@@ -83,6 +83,7 @@ game path), `mapcyclefile mapcycle_flux.txt` is found there too, and writeid wri
 
 ## Versions
 
+- **1.0.6** (2026-11-25): `flux-tf2 backups` reports `lastRestore` (name, ok, error, a marker that changes at every attempt) so the hub can tell a restore that happened from one that failed; a backup that cannot be unpacked is refused with its reason (the files stay, the safety backup is named) instead of a traceback.
 - **1.0.5** (2026-11-25): SteamCMD: the depotcache lives on the install volume, `state is 0x6` (any exit code) starts the installed build instead of retrying, and a `docker stop` during a download or the pause between attempts ends the container with 0 (it ended with 42). A restore whose safety backup cannot be made is refused (nothing changed) and logged as an ERROR. The launcher refuses control and invisible characters in the server name and passwords and non-ASCII digits in the player count.
 - **1.0.4** (2026-10-20): `flux.log` moved off the synced data volume to `/mnt/tf2/server/flux-logs/flux.log` (5 MB, one `.1`; an old one is moved there once); start-up banner; the weekly rebuild only when it has something to apply (new script `.github/ci/needs-rebuild.sh`).
 - **1.0.3** (2026-10-19): the launcher's warnings no longer end up inside the launch line (a process
